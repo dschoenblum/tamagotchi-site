@@ -1,0 +1,1618 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tamagotchi P1 — behavioral model</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#e9e8e2;
+    --paper-2:#dedcd4;
+    --ink:#191c16;
+    --ink-soft:#5c6055;
+    --rule:#c3c2b8;
+    --lcd:#a4ac91;
+    --lcd-dim:#9aa287;
+    --lcd-ink:#1e2318;
+    /* the lights-off palette (#62) — see renderLcd(). A dimmed copy of the
+       day palette, NOT inverted video: the ink stays darker than the cells,
+       so lights-off reads as the same screen with the room gone dark rather
+       than as a different scene.                              [UI CHOICE] */
+    --lcd-night:#565c48;
+    --lcd-night-dim:#515646;
+    --lcd-night-ink:#14170e;
+    --shell:#343a2d;
+    --magenta:#d6006c;
+    --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+    --sans:"IBM Plex Sans",system-ui,sans-serif;
+    --display:"Bricolage Grotesque","IBM Plex Sans",sans-serif;
+  }
+
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--paper);
+    color:var(--ink);
+    font-family:var(--sans);
+    font-size:14px;
+    line-height:1.45;
+    padding:clamp(12px,3vw,32px);
+  }
+
+  /* ---------- masthead ---------- */
+  .masthead{
+    display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;
+    border-bottom:2px solid var(--ink);padding-bottom:10px;margin-bottom:20px;
+  }
+  .masthead h1{
+    font-family:var(--display);font-weight:800;
+    font-size:clamp(24px,4.5vw,40px);letter-spacing:-.03em;
+    margin:0;line-height:1;
+  }
+  .masthead .sub{
+    font-family:var(--mono);font-size:11px;letter-spacing:.08em;
+    text-transform:uppercase;color:var(--ink-soft);
+  }
+  .masthead .clock{
+    margin-left:auto;font-family:var(--mono);font-size:13px;
+    font-variant-numeric:tabular-nums;
+  }
+  .masthead .clock b{font-size:20px;font-weight:600;letter-spacing:-.02em}
+
+  /* ---------- layout ---------- */
+  .grid{
+    display:grid;gap:20px;
+    grid-template-columns:minmax(320px,440px) minmax(300px,1fr);
+    align-items:start;
+  }
+  @media (max-width:820px){ .grid{grid-template-columns:1fr} }
+
+  .panel{border:1px solid var(--rule);background:var(--paper-2)}
+  .panel > h2{
+    font-family:var(--mono);font-size:10px;font-weight:600;
+    letter-spacing:.14em;text-transform:uppercase;color:var(--ink-soft);
+    margin:0;padding:7px 10px;border-bottom:1px solid var(--rule);
+    display:flex;justify-content:space-between;align-items:center;gap:8px;
+  }
+
+  /* ---------- device ---------- */
+  .device{background:var(--shell);border:1px solid var(--shell);padding:14px}
+  .iconbar{
+    display:grid;grid-template-columns:repeat(8,1fr);gap:4px;margin-bottom:10px;
+  }
+  .icon{
+    display:flex;flex-direction:column;align-items:center;gap:3px;
+    padding:4px 2px;background:#2a3024;border:1px solid #454c3b;
+    font-family:var(--mono);font-size:8px;letter-spacing:.04em;
+    color:#767e68;text-transform:uppercase;
+  }
+  .icon canvas{image-rendering:pixelated;opacity:.28}
+  .icon.on{border-color:var(--lcd);color:var(--lcd)}
+  .icon.on canvas{opacity:1}
+  .icon.alert{border-color:var(--magenta);color:var(--magenta)}
+  .icon.alert canvas{opacity:1;animation:blink 1s steps(2,end) infinite}
+  /* Pause freezes the LCD (#64); the icon bar's blink freezes with it, so the
+     whole device reads as stopped rather than half-stopped. */
+  body.paused .icon.alert canvas{animation-play-state:paused}
+  /* The cursor at 0x075. Deliberately a different signal from .on/.alert,
+     which say what the pet needs — the cursor says where the A button is. */
+  .icon.sel{background:#e8ecd8;border-color:#e8ecd8;color:#1e2318}
+  .icon.sel canvas{opacity:1;filter:invert(1) brightness(.28)}
+  @keyframes blink{50%{opacity:.15}}
+
+  #lcd{
+    display:block;width:100%;height:auto;
+    image-rendering:pixelated;background:var(--lcd);
+    border:1px solid #6f7760;
+  }
+
+  /* ---------- controls ---------- */
+  .abc{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}
+  .abc button{
+    display:flex;flex-direction:column;align-items:center;gap:2px;
+    padding:10px 4px;font-size:15px;font-weight:600;letter-spacing:.06em;
+  }
+  .abc button span{
+    font-size:9px;font-weight:400;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--ink-soft);
+  }
+  .hint{
+    margin-top:8px;font-family:var(--mono);font-size:10px;letter-spacing:.06em;
+    text-transform:uppercase;color:#8b937c;min-height:14px;
+  }
+  .hint b{color:var(--lcd);font-weight:600}
+
+  .devacts{margin-top:12px;border-top:1px solid #454c3b;padding-top:8px}
+  .devacts summary{
+    font-family:var(--mono);font-size:9px;letter-spacing:.12em;
+    text-transform:uppercase;color:#767e68;cursor:pointer;
+  }
+  .devacts summary:hover{color:var(--lcd)}
+  .actions{
+    display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:10px;
+  }
+  /* the Reset start state (#65) */
+  .resetopts{
+    display:flex;align-items:center;gap:7px;margin-top:9px;flex-wrap:wrap;
+    font-family:var(--mono);font-size:9px;letter-spacing:.1em;
+    text-transform:uppercase;color:#767e68;
+  }
+  .resetopts input{
+    font:inherit;font-size:10.5px;letter-spacing:0;text-transform:none;
+    padding:4px 5px;background:var(--paper);color:var(--ink);
+    border:1px solid var(--ink);border-radius:0;
+  }
+  .resetopts input:focus-visible{outline:2px solid var(--magenta);outline-offset:1px}
+  .resetopts #start-seed{width:5em}
+  button{
+    font-family:var(--mono);font-size:11px;font-weight:500;letter-spacing:.02em;
+    padding:9px 4px;background:var(--paper);color:var(--ink);
+    border:1px solid var(--ink);border-radius:0;cursor:pointer;
+    transition:transform .06s ease, background .12s ease;
+    /* [UI CHOICE] a fast double-tap on a button (Meal, Game, A/B/C, ...) reads
+       to mobile browsers as the double-tap-to-zoom gesture without this —
+       telling them the tap is already handled skips that heuristic. */
+    touch-action:manipulation;
+  }
+  button:hover:not(:disabled){background:#fff}
+  button:active:not(:disabled){transform:translateY(1px)}
+  button:disabled{opacity:.32;cursor:not-allowed}
+  button:focus-visible{outline:2px solid var(--magenta);outline-offset:2px}
+  button.urgent{background:var(--magenta);border-color:var(--magenta);color:#fff}
+
+  /* ---------- vitals ---------- */
+  .vitals{padding:12px 14px;display:grid;gap:9px}
+  .vital{display:grid;grid-template-columns:74px 1fr auto;align-items:center;gap:10px}
+  .vital .lbl{
+    font-family:var(--mono);font-size:10px;letter-spacing:.08em;
+    text-transform:uppercase;color:var(--ink-soft);
+  }
+  .pips{display:flex;gap:3px}
+  .pip{width:14px;height:14px;border:1.5px solid var(--ink)}
+  .pip.full{background:var(--ink)}
+  .vital .num{font-family:var(--mono);font-size:13px;font-variant-numeric:tabular-nums}
+  .who{
+    padding:12px 14px;border-bottom:1px solid var(--rule);
+    display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;
+  }
+  .who .name{font-family:var(--display);font-weight:800;font-size:26px;letter-spacing:-.02em;line-height:1}
+  .who .stage{
+    font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--ink-soft);border:1px solid var(--rule);padding:2px 6px;
+  }
+  .who .stage.dead{color:var(--magenta);border-color:var(--magenta)}
+
+  /* ---------- ram (the signature panel) ---------- */
+  .ram{max-height:420px;overflow-y:auto}
+  table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11.5px}
+  th{
+    text-align:left;font-weight:500;font-size:9px;letter-spacing:.1em;
+    text-transform:uppercase;color:var(--ink-soft);
+    padding:5px 10px;border-bottom:1px solid var(--rule);
+    position:sticky;top:0;background:var(--paper-2);
+  }
+  td{padding:2.5px 10px;border-bottom:1px solid rgba(195,194,184,.45);font-variant-numeric:tabular-nums}
+  td.addr{color:var(--ink-soft);width:54px}
+  /* The address and the field name both carry the field's description (#66) —
+     dotted and help-cursored so the panel says that it has one. */
+  td.addr,td.fld{cursor:help}
+  td.fld{text-decoration:underline dotted var(--rule);text-underline-offset:3px}
+  tr:hover td.fld{text-decoration-color:var(--ink-soft)}
+  td.val{text-align:right;width:64px;font-weight:600;cursor:text}
+  td.val:hover{box-shadow:inset 0 -1px var(--ink-soft)}
+  td.val:focus-visible{outline:2px solid var(--magenta);outline-offset:-2px}
+  td.val input{
+    width:100%;padding:0 2px;margin:-1px 0;
+    font:inherit;font-weight:600;text-align:right;
+    background:var(--paper);color:var(--ink);
+    border:1px solid var(--magenta);border-radius:0;
+  }
+  td.val input:focus{outline:none}
+  td.rom{text-align:right;width:78px;color:var(--ink-soft);letter-spacing:.08em}
+  /* `nz` fields (0x04A) — the nibble shown is fields.mjs's `on` stand-in, not a
+     value the ROM is held to. Dotted, so the panel never claims more than the
+     diff does. #6 */
+  td.rom.nz{border-bottom-style:dotted;text-decoration:underline dotted}
+  tr.hit td{background:var(--magenta);color:#fff}
+  tr.hit td.addr,tr.hit td.rom{color:rgba(255,255,255,.75)}
+  tr:not(.hit) td{transition:background .5s ease,color .5s ease}
+
+  /* ---------- log ---------- */
+  .log{max-height:220px;overflow-y:auto;padding:6px 0;font-family:var(--mono);font-size:11.5px}
+  .log div{padding:2px 10px;display:flex;gap:9px}
+  .log .t{color:var(--ink-soft);flex:none;font-variant-numeric:tabular-nums}
+  .log .evolve,.log .cured{color:var(--ink);font-weight:600}
+  .log .poke{color:var(--ink);font-weight:600;box-shadow:inset 2px 0 var(--magenta)}
+  .log .sick,.log .careMistake,.log .disciplineMistake{color:var(--magenta)}
+  .log .death{color:var(--magenta);font-weight:600}
+  .log .empty{color:var(--ink-soft);padding:10px}
+  /* A line the PAGE derived from a RAM change, not one the model emitted (#62).
+     Dotted for the same reason the ROM column's `nz` cells are: the panel never
+     claims more than its source does. */
+  .log .derived{color:var(--ink-soft);font-style:italic}
+  .log .derived span:last-child{border-bottom:1px dotted var(--rule)}
+
+  /* ---------- speed strip ---------- */
+  .speed{
+    margin-bottom:20px;border:1px solid var(--rule);background:var(--paper-2);
+    display:flex;align-items:center;gap:10px;padding:9px 12px;flex-wrap:wrap;
+  }
+  .speed .lbl{
+    font-family:var(--mono);font-size:10px;letter-spacing:.12em;
+    text-transform:uppercase;color:var(--ink-soft);
+  }
+  .speed .grp{display:flex;gap:0;margin-right:auto}
+  .speed .grp button{border-right-width:0}
+  .speed .grp button:last-child{border-right-width:1px}
+  .speed .grp button[aria-pressed="true"]{background:var(--ink);color:var(--paper)}
+
+  .note{
+    margin-top:16px;font-size:11.5px;color:var(--ink-soft);max-width:74ch;
+    font-family:var(--mono);line-height:1.6;
+  }
+  .note b{color:var(--ink);font-weight:600}
+
+  @media (prefers-reduced-motion:reduce){
+    *{animation:none !important;transition:none !important}
+  }
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <h1>Tamagotchi&nbsp;P1</h1>
+  <span class="sub">behavioral model · not an emulator</span>
+  <span class="clock">day <b id="day">0</b> &nbsp; <b id="wall">00:00</b></span>
+</header>
+
+<div class="speed">
+  <span class="lbl">Speed</span>
+  <div class="grp" id="speeds"></div>
+  <button id="btn-step">Step 1 min</button>
+  <button id="btn-pause">Pause</button>
+  <button id="btn-reset-top" title="Reset — hatch a new egg (asks first)">Reset</button>
+</div>
+
+<div class="grid">
+  <div>
+    <section class="panel">
+      <h2>Device <span id="alive-tag"></span></h2>
+      <div class="device">
+        <div class="iconbar" id="iconbar"></div>
+        <canvas id="lcd" width="417" height="209"></canvas>
+        <div class="abc">
+          <button id="btn-a" title="A — advance the cursor (keys: A, →)">A<span id="lbl-a">next</span></button>
+          <button id="btn-b" title="B — select (keys: B, Enter)">B<span id="lbl-b">select</span></button>
+          <button id="btn-c" title="C — cancel / home (keys: C, Esc)">C<span id="lbl-c">cancel</span></button>
+        </div>
+        <div class="hint" id="hint"></div>
+        <details class="devacts">
+          <summary>Direct actions — dev shortcuts</summary>
+          <div class="actions">
+            <button id="btn-meal">Meal</button>
+            <button id="btn-snack">Snack</button>
+            <button id="btn-game">Game</button>
+            <button id="btn-med">Medicine</button>
+            <button id="btn-clean">Clean</button>
+            <button id="btn-scold">Scold</button>
+            <button id="btn-light">Lights</button>
+            <button id="btn-reset">Reset</button>
+          </div>
+          <!-- What Reset powers the machine on with (#65). Both blank is the
+               wall clock, which is what it always did. -->
+          <div class="resetopts">
+            <label for="start-time">Start</label>
+            <input id="start-time" type="time" aria-label="power-on time, blank for the wall clock">
+            <label for="start-seed">0x05A</label>
+            <input id="start-seed" type="number" min="0" max="15" step="1"
+                   aria-label="power-on value of the counter at 0x05A, 0 to 15, blank for the wall clock's seconds">
+            <span>blank = wall clock</span>
+          </div>
+        </details>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top:20px">
+      <div class="who">
+        <span class="name" id="name">—</span>
+        <span class="stage" id="stage">egg</span>
+      </div>
+      <div class="vitals" id="vitals"></div>
+    </section>
+  </div>
+
+  <div>
+    <section class="panel">
+      <h2>Memory <span style="letter-spacing:.02em;text-transform:none">click a value to poke · flashes on write</span></h2>
+      <div class="ram">
+        <table>
+          <thead><tr>
+            <th>Addr</th><th>Field</th>
+            <th style="text-align:right">Value</th>
+            <th style="text-align:right" id="th-rom">ROM</th>
+          </tr></thead>
+          <tbody id="ram"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top:20px">
+      <h2>Events</h2>
+      <div class="log" id="log"><div class="empty">Nothing yet. The egg hatches five minutes in.</div></div>
+    </section>
+  </div>
+</div>
+
+<!-- Everything here has to be something a person DRIVING the page benefits from
+     knowing, and has to stay true as the model and the harness advance (#43,
+     #67). Implementation rationale belongs in CLAUDE.md and in this file's own
+     comments; a caveat that is really outstanding work belongs in an issue. -->
+<p class="note">
+  Every value on the right mirrors a real address in the P1's RAM, so a dump from this page
+  can be diffed nibble-for-nibble against the real ROM running under emulation — which is how
+  the rules behind it are checked, rather than by assertion. Hover a field's name or address
+  for what it means; click its value to poke it. Sprites are original drawings, not the
+  Bandai originals.
+  <b>A cycles the icon cursor, B selects, C cancels</b> (or the A / B / C keys, or → / Enter / Esc) —
+  the device's own cursor, icon order and dispatch table, not an invention of this page.
+  <b>Two things here cannot match a real device, and both are this page having no emulator
+  beside it.</b> The guessing game reads 0x05A, a counter the hardware's programmable timer
+  advances thousands of times a minute, so a game played here is the right computation on a
+  guessed input. And where the clock interrupt lands inside a main-loop pass decides a handful
+  of collisions each minute that a model with a one-minute time base cannot see, so a long run
+  here drifts from a real one at those moments. The test harness replays both from the ROM
+  itself; the page has only the guess.
+</p>
+
+<script type="module">
+import { TamaP1, CHARACTERS, CHAR, STAGE, RULES, RAM_MAP } from './tama-p1-model.js';
+// The RAM panel's ROM column runs the harness's own encoder, rather than a copy
+// of it: duplicating the `flag`/`nz` `on` values into the page is exactly the
+// bug #5 was. fields.mjs is pure ESM with no Node imports, so the browser loads
+// it as-is — which makes it the third file the page needs at runtime, and it is
+// in the deploy allowlist in .github/workflows/deploy.yml for that reason (#26).
+import { encodeField, fieldAt, DEFAULT_ORDER } from './harness/fields.mjs';
+
+/* ===========================================================================
+   Sprites — 16×16, original artwork. The real P1's LCD is 32×16 pixels with 8
+   fixed icons, so the creature occupies the middle 16 columns and poop sits
+   in the side columns, matching the hardware layout.
+   =========================================================================== */
+const S = (...rows) => rows;
+
+const SPRITES = {
+  egg: S(
+    "................","................",".....######.....","....########....",
+    "...##########...","..############..","..####..######..","..##..####..##..",
+    "..############..","..############..","..##..####..##..","..####..######..",
+    "..############..","...##########...","....########....",".....######....."),
+
+  [CHAR.BABYTCHI]: S(
+    "................","................","................",".......#........",
+    "......###.......",".....######.....","....########....","....##.##.##....",
+    "....########....","....##....##....","....########....",".....######.....",
+    "......####......",".....#....#.....","................","................"),
+
+  [CHAR.MARUTCHI]: S(
+    "................","................",".....######.....","...##########...",
+    "..############..","..#.########.#..","..############..","..############..",
+    "..###......###..","..############..","...##########...","....########....",
+    ".....#.##.#.....","....##....##....","...####..####...","................"),
+
+  [CHAR.TAMATCHI]: S(
+    "................",".......##.......","......####......",".....######.....",
+    "....########....","...##########...","..############..","..#.########.#..",
+    "..############..","..###......###..","..############..","...##########...",
+    "....########....",".....#....#.....","....##....##....","................"),
+
+  [CHAR.KUCHITAMATCHI]: S(
+    "................","................","....########....","...##########...",
+    "..############..","..#.########.#..","..############..","..############..",
+    "...##########...","....######......","...########.....","...##....##.....",
+    "....######......",".....#..#.......","....##..##......","................"),
+
+  [CHAR.MAMETCHI]: S(
+    "................","..##........##..","..##........##..","..############..",
+    ".##############.",".##############.",".###.######.###.",".##############.",
+    ".####......####.",".##############.","..############..","...##########...",
+    "....##....##....","....##....##....","...####..####...","................"),
+
+  [CHAR.GINJIROTCHI]: S(
+    "................","....#......#....","....##....##....",".....######.....",
+    "...##########...","..############..","..#.########.#..","..############..",
+    "..###......###..","..############..","...##########...","....########....",
+    ".....#....#.....","....##....##....","...####..####...","................"),
+
+  [CHAR.MASKUTCHI]: S(
+    "................","................","..############..",".##############.",
+    ".####.####.####.",".##############.",".##############.","..############..",
+    "..############..","...##########...","....########....","...##########...",
+    "..####....####..","....##....##....","...####..####...","................"),
+
+  [CHAR.KUCHIPATCHI]: S(
+    "................","................","...##########...","..############..",
+    ".####.####.####.",".##############.",".##############.",".##############.",
+    "..####....####..","...##########...","....######......","...########.....",
+    "....######......",".....#..#.......","....##..##......","................"),
+
+  [CHAR.NYOROTCHI]: S(
+    "................","................",".....######.....","....########....",
+    "....#.####.#....","....########....",".....######.....","......####......",
+    ".....######.....","....########....","...####..####...","..####....####..",
+    ".####......####.",".##..........##.","................","................"),
+
+  [CHAR.TARAKOTCHI]: S(
+    "................","................","................","...##########...",
+    "..############..",".####.####.####.",".##############.",".##############.",
+    ".##############.",".##############.","..############..","...##########...",
+    "....########....","................","................","................"),
+
+  [CHAR.BILL]: S(
+    "................","....########....","....########....","..############..",
+    ".##############.",".##############.",".###.######.###.",".##############.",
+    ".###..####..###.",".####......####.","..############..","...##########...",
+    "....##....##....","....##....##....","...####..####...","................"),
+
+  ghost: S(
+    "................","................",".....######.....","....########....",
+    "...##########...","...##.####.##...","...##########...","...##########...",
+    "...##########...","...##########...","...##########...","...##.##.##.##..",
+    "................","................","................","................"),
+};
+
+const POOP = S("..####..",".######.","..####..",".######.","########","########",".######.","........");
+const ZED  = S("........",".######.","....##..","...##...","..##....",".######.","........","........");
+const SICK = S("...##...","...##...","...##...",".######.","...##...","...##...","........","...##...");
+
+/* ---- menu-screen glyphs (#23) --------------------------------------------
+   Original artwork in the same 16×16 LCD idiom as the creatures above — the
+   real device's food/lamp/heart shapes are Bandai's and are not copied here.
+   12×10 for the two submenu choices, 5×5 for the meter screen's hearts. */
+const MEAL = S(
+  "............","..#..#..#...",".#..#..#....","............","############",
+  ".##########.","..########..","...######...","....####....","............");
+const SNACK = S(
+  "...####.....","..######....",".###..###...",".##.##.##...",".###..###...",
+  "..######....","...####.....","....##......","....##......","....##......");
+const LAMP_ON = S(
+  "..#..#..#...","...#.#.#....","...######...","..########..","..########..",
+  "..########..","...######...","....####....","....####....","............");
+const LAMP_OFF = S(
+  "....####....","..###..##...",".###....#...",".###........",".###........",
+  ".###........",".###....#...","..###..##...","....####....","............");
+/* label_228's refuse animation (0x05E = 6) has no RAM write to show, so the
+   page stands in a plain X for it — presentation only, like the animation. */
+const REFUSE = S(
+  "................",".##..........##.","..##........##..","...##......##...",
+  "....##....##....",".....##..##.....","......####......",".......##.......",
+  "......####......",".....##..##.....","....##....##....","...##......##...",
+  "..##........##..",".##..........##.","................","................");
+const HEART_FULL  = S("##.##","#####","#####",".###.","..#..");
+const HEART_EMPTY = S("##.##","#...#","#...#",".#.#.","..#..");
+const MARK_HUNGER = S("#.#.#","#.#.#","#####","..#..","..#..");   // a fork
+const MARK_HAPPY  = S(".#.#.",".....","#...#","#...#",".###.");   // a face
+
+/* 8×8 status icons across the top of the shell */
+const ICONS = {
+  food:      S("........","..####..",".######.",".#....#.",".#....#.",".######.","..####..","........"),
+  light:     S("...##...",".#.##.#.","..####..",".######.",".######.","..####..","...##...","........"),
+  game:      S("........",".######.","#.#..#.#","#......#","#.#..#.#",".######.","........","........"),
+  medicine:  S("........","..####..","..#..#..","..#..#..",".######.",".######.",".######.","........"),
+  clean:     S("..####..",".######.","..####..",".######.","########","########",".######.","........"),
+  health:    S(".##..##.","########","########","########",".######.","..####..","...##...","........"),
+  discipline:S("...##...","..####..",".######.","########","...##...","...##...","...##...","........"),
+  attention: S("...##...","..####..",".######.","..####..","...##...","........","...##...","........"),
+};
+/* The bar is drawn in the ROM's icon order, so this array's index i is cursor
+   value i+1 at 0x075 — 1 feed, 2 lights, 3 game, 4 medicine, 5 clean,
+   6 meter, 7 discipline. `attention` is the eighth LCD icon and is NOT
+   selectable: 0x076 bounds the cursor at 8, i.e. 0..7, where 0 is "no icon".
+   Icon order and cursor semantics are documented in CLAUDE.md ("The menu is
+   one cursor and one dispatch table") and in tamalib_trace.c's macro-section
+   comment — the same table the oracle's macro layer walks (#1, #23). */
+const ICON_ORDER = [
+  ["food","Food"],["light","Light"],["game","Game"],["medicine","Meds"],
+  ["clean","Clean"],["health","Health"],["discipline","Train"],["attention","Call"],
+];
+
+/* ===========================================================================
+   LCD renderer — 32×16 cells drawn as discrete squares with a gutter, the way
+   a segment LCD actually reads.
+   =========================================================================== */
+const CELL = 12, GAP = 1, COLS = 32, ROWS = 16;
+const lcd = document.getElementById('lcd');
+lcd.width  = COLS * (CELL + GAP) + GAP;
+lcd.height = ROWS * (CELL + GAP) + GAP;
+const ctx = lcd.getContext('2d');
+
+/* `night` swaps in the lights-off palette. The REAL ROM goes further: with
+   0x04B == 0 the render path fills the whole video buffer with 0xF
+   (copy_buf_and_render_misc, 0x400-0x40B), a solid black screen, awake or
+   asleep — which is why lights-off while awake reads online as "nothing
+   works", the pet is simply invisible. The page dims instead of blanking so
+   the state stays legible: the cells are the same cells, the room is just
+   dark, and an awake pet with the lights off stays readable as the care
+   setup it is (#3).                                              [UI CHOICE] */
+function drawLcd(bits, night = false){
+  const bg  = getCss(night ? '--lcd-night' : '--lcd');
+  const dim = getCss(night ? '--lcd-night-dim' : '--lcd-dim');
+  const ink = getCss(night ? '--lcd-night-ink' : '--lcd-ink');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0,0,lcd.width,lcd.height);
+  for(let y=0;y<ROWS;y++){
+    for(let x=0;x<COLS;x++){
+      ctx.fillStyle = bits[y][x] ? ink : dim;
+      ctx.fillRect(GAP + x*(CELL+GAP), GAP + y*(CELL+GAP), CELL, CELL);
+    }
+  }
+}
+const getCss = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+function blankBits(){ return Array.from({length:ROWS},()=>new Array(COLS).fill(0)); }
+function stamp(bits, sprite, ox, oy){
+  for(let y=0;y<sprite.length;y++){
+    for(let x=0;x<sprite[y].length;x++){
+      if(sprite[y][x] !== '.'){
+        const py = oy+y, px = ox+x;
+        if(py>=0 && py<ROWS && px>=0 && px<COLS) bits[py][px] = 1;
+      }
+    }
+  }
+}
+
+/* ===========================================================================
+   Model wiring
+   =========================================================================== */
+
+const SPEEDS = [
+  ["Real",  1/60],   // emulated minutes per real second
+  ["60×",   1],
+  ["600×",  10],
+  ["Warp",  60],
+];
+
+// Declared up here, not down in the render section: fresh() reads the two
+// start-state inputs (#65) and runs at module load, before that section is
+// evaluated — a `const` down there is in its temporal dead zone at that
+// point and a first visit with no saved state throws instead of hatching.
+const el = (id) => document.getElementById(id);
+
+/* Write DOM text/markup ONLY when it actually changed. Assigning textContent
+   replaces the text node even when the string is identical, and WebKit drops
+   any click whose press straddles the destruction of the node under the
+   pointer — so with the render loop rewriting button labels ten times a
+   second, a press at normal human pace (~100ms+ hold) on the Lights button
+   never became a click in Safari at all, while a quick tap slipped between
+   renders. Measured: 12/12 normal-pace presses lost before this guard, 0
+   after. Everything render() writes per-frame goes through these two. */
+const setText = (id, s) => { const n = el(id); if(n.textContent !== s) n.textContent = s; };
+// innerHTML re-serializes on read, so compare against what we last WROTE.
+const setHtml = (id, s) => { const n = el(id); if(n._lastHtml !== s){ n._lastHtml = s; n.innerHTML = s; } };
+
+// Real time is the default: the page powers on running at the speed the
+// device does, and anything faster is an explicit choice. The chosen speed
+// persists with the pet — restoring the state but not the rate it was
+// running at restores a different session.                    [UI CHOICE]
+let pet, speedIdx = 0, paused = false, acc = 0, frame = 0;
+// Silent 0x04B writes seen by step(), waiting to be rendered. See renderLog().
+let silentLights = [];
+
+/* Power-on. The three arguments are the ONLY ones the constructor takes, and
+   they are the same three run-model.mjs passes out of a scenario's `start`
+   block — so "reset at 19:00 with seed 3" and `"start": {"hour": 19, "minute":
+   0, "seed": 3}` are the same run, and lights-care-mistake's 19:00 arming can
+   be driven by hand instead of waited for. No model API was added for this:
+   the page reads two inputs and hands the constructor what the harness would
+   have. Blank means the wall clock, which is what Reset always did. #65 */
+function startState(){
+  const now = new Date();
+  const t = /^(\d{1,2}):(\d{2})/.exec(el('start-time').value);
+  const s = Number(el('start-seed').value);
+  return {
+    hour:   t ? Number(t[1]) : now.getHours(),
+    minute: t ? Number(t[2]) : now.getMinutes(),
+    // The constructor masks to 4 bits itself; clamping here only keeps a typed
+    // 99 from reading as 3 without saying so.
+    seed: el('start-seed').value.trim() === '' || !Number.isFinite(s)
+      ? (now.getSeconds() & 0xf)
+      : Math.min(15, Math.max(0, Math.trunc(s))),
+  };
+}
+
+function fresh(){
+  pet = new TamaP1(startState());
+  save();
+}
+
+function save(){
+  try{
+    const plain = {};
+    for(const k of Object.keys(pet)) plain[k] = pet[k];
+    plain.log = pet.log.slice(-120);
+    localStorage.setItem('tama-p1', JSON.stringify({ state: plain, speedIdx }));
+  }catch(e){ /* private mode, file://, whatever — not load-bearing */ }
+}
+
+function load(){
+  try{
+    const raw = localStorage.getItem('tama-p1');
+    if(!raw) return false;
+    const { state, speedIdx: savedSpeed } = JSON.parse(raw);
+    // Saves from before the speed was stored have no speedIdx and keep the
+    // Real default; a stored one is range-checked in case SPEEDS shrinks.
+    if(Number.isInteger(savedSpeed) && savedSpeed >= 0 && savedSpeed < SPEEDS.length)
+      speedIdx = savedSpeed;
+    // Fields keep turning into getters as the model learns what the RAM really
+    // holds — needsScolding over 0x209 (#29), sick over 0x048's bit 3 (#32),
+    // hungryRate/happyRate over the live 0x234-7 pair. A save written before
+    // any of those stored them as plain properties, and assigning one onto the
+    // getter throws in module strict mode, which would silently discard the
+    // whole save. Drop anything the current class does not own as data.
+    const blank = new TamaP1();
+    for(const k of Object.keys(state)){
+      const d = Object.getOwnPropertyDescriptor(blank, k);
+      if(!d || !d.writable) delete state[k];
+    }
+    pet = Object.assign(blank, state);
+    return true;
+  }catch(e){ return false; }
+}
+
+if(!load()) fresh();
+
+/* ---- tick loop ---- */
+function step(n = 1){
+  for(let i=0;i<n;i++){
+    // The scold timeout used to live here as a UI-side guess (#24). It is the
+    // model's now, and it is the ROM's: 0x209 saturates 14 minutes after the
+    // request and books the discipline mistake itself (serviceScoldCall).
+    //
+    // Death does not stop the loop. label_314 never tests 0x05D, so the ROM
+    // keeps running the per-minute interrupt over the corpse — hearts decay
+    // against 0, the neglect counter climbs and wraps, the sickness counter
+    // walks back down (tickDead(), #12). Only main-loop work stops. Breaking
+    // here would freeze the RAM panel on a state the hardware does not hold.
+    // 0x04B's silent transitions (#62). Nothing inside tick() emits a `lights`
+    // event, so any change of pet.lightsOn across one is label_359's wake write
+    // or label_116's death animation. Caught HERE and not at render time
+    // because render() runs after a batch of up to 700 ticks at Warp, and a
+    // transition stamped "the minute the page noticed" would be wrong by that
+    // much. See renderLog().
+    const wasLit = pet.lightsOn;
+    pet.tick();
+    if(pet.lightsOn !== wasLit)
+      silentLights.push(
+        { on: pet.lightsOn, t: pet.elapsed, hour: pet.hour, minute: pet.minute });
+  }
+}
+
+/* `frame` is INSIDE the pause guard (#64). It drives the idle bob, the sleeping
+   Z's blink and the refuse animation's expiry, so freezing it freezes the LCD —
+   which is the point: a still screen is the paused state's visual signal, and
+   the small `alive-tag` and the button label were the only ones before.
+   Two consequences, both chosen rather than tripped over:
+
+     - A refuse animation in flight (refuseUntil = frame + 8) freezes ON SCREEN
+       for as long as the pause lasts, and resumes its remaining frames after.
+       It is paused; a paused animation should be paused. Nothing is lost —
+       label_228's refusal has no RAM write behind it to miss.
+     - Poking a RAM cell pauses (#25), so the screen freezes for the duration of
+       the edit too. That is the same signal, wanted for the same reason: the
+       sim is not running while you type into it.
+
+   The icon bar's alert blink is a CSS animation and freezes with it, off the
+   `paused` class on <body>. See setPaused(). */
+setInterval(() => {
+  if(paused){ render(); return; }
+  acc += SPEEDS[speedIdx][1] * 0.1;
+  let budget = 0;
+  while(acc >= 1 && budget < 700){ step(1); acc -= 1; budget++; }
+  frame++;
+  render();
+}, 100);
+
+setInterval(save, 3000);
+
+/* ===========================================================================
+   The A/B/C menu (#23)
+
+   ALL of this is presentation and ALL of it lives here. The model has no menu
+   state machine on purpose: navigation writes nothing worth diffing, so adding
+   a cursor to tama-p1-model.js would cost the model its liftability for no
+   fidelity. The oracle's macro layer encodes the same table on the other side
+   (tamalib_trace.c) — see the ICON_ORDER comment above for the citations.
+
+   Semantics, none of it re-derived here:
+     A  advances the cursor at 0x075, wrapping at the bound in 0x076
+        (8 on the main screen, 2 in a submenu).
+     B  saves the cursor to 0x0A0 and dispatches through the jump table at
+        ROM 0x700.
+     C  homes the cursor (label_159).
+     Feed (label_220) and lights (label_297) open a two-item submenu driven by
+     label_352, whose input 0x078 is SEEDED at every open — nothing persists
+     in it across visits. Feed seeds it from 0x073, the last kind a confirm
+     stored (label_221, 0x713-6); lights seeds it from the live 0x04B
+     (0xABF-0xAC4: 0x078 = (0x04B & 1) ^ 1), so that submenu always opens on
+     the item matching the current state and a B without an A re-applies it.
+     Feed loops back into the submenu after the eat animation, so it takes a
+     C to leave; the lights confirm exits to the main screen by itself, as do
+     clean and discipline. Medicine returns with the cursor still on its
+     icon, so repeat shots are repeat B presses.
+
+   Two things here are the PAGE's choice, not the ROM's, and are marked as such:
+   the meter screen's layout, and the idle timeout's length. =============== */
+const MAIN = 'main', SUB_FEED = 'feed', SUB_LIGHTS = 'lights', METER = 'meter';
+
+let cursor = 0;               // 0x075 on the main screen: 0 none, 1..7 icons
+let screen = MAIN;
+let subSel = { feed: 0, lights: 0 };   // 0x078 — SEEDED at each open, see dispatch()
+let feedKind = 0;             // 0x073 — the kind the last feed confirm stored
+let lastInput = Date.now();
+let refuseUntil = 0;          // frame number; the stand-in refuse animation
+
+// The ROM homes an idle screen after ~10 ticks of 0x057 (label_66). Ten
+// seconds of wall clock is the page's analogue — the tick rate here is a
+// speed control, so there is no honest conversion.            [UI CHOICE]
+const IDLE_HOME_MS = 10000;
+
+const refuse = () => { refuseUntil = frame + 8; };
+
+/** B on an icon. Returns 'ok' or 'refuse'; every guard below is the model's
+ *  own, which mirrors the ROM handler's (#34) — the page adds no rules. */
+function dispatch(icon){
+  switch(icon){
+    // label_220 tests 0x04A FIRST and exits through label_222 -> label_160
+    // without opening the submenu or playing the refuse animation: a B on
+    // the food icon over a sleeping pet is silent. Awake, the submenu opens
+    // on 0x073 — the kind the last confirm STORED (label_223 writes it
+    // before its guards run, so a refused meal moves it too).
+    case 1:  if(pet.asleep) return 'ok';
+             subSel.feed = feedKind; screen = SUB_FEED; return 'ok';
+    // label_297 has no guard at all — asleep included — and seeds the
+    // selection from the live 0x04B (0xABF-0xAC4: 0x078 = (0x04B & 1) ^ 1),
+    // so the submenu always opens on the item matching the current state.
+    case 2:  subSel.lights = pet.lightsOn ? 0 : 1;
+             screen = SUB_LIGHTS; return 'ok';
+    case 3:  return pet.playGame(0) === null ? 'refuse' : 'ok';
+    case 4:  return pet.medicine() ? 'ok' : 'refuse';
+    // label_336: the sweep animation always plays and 0x04D is zeroed only if
+    // nonzero, so cleaning an empty tray is not a refusal. Asleep is.
+    case 5:  if(pet.asleep) return 'refuse'; pet.clean(); return 'ok';
+    case 6:  screen = METER; return 'ok';         // display only, no model call
+    // label_301: asleep does nothing; awake with nothing pending is animation
+    // and buzzer only (label_303) — not label_228's refusal.
+    case 7:  if(!pet.alive || pet.asleep){ pet.scold(); return 'refuse'; }
+             pet.scold(); return 'ok';
+    default: return 'ok';                         // cursor 0 — no icon
+  }
+}
+
+function pressA(){
+  if(screen === MAIN)      cursor = (cursor + 1) % 8;       // 0x076 = 8
+  else if(screen === METER) toMain();
+  else                     subSel[screen] ^= 1;             // 0x076 = 2
+}
+
+function pressB(){
+  if(screen === MAIN){
+    if(dispatch(cursor) === 'refuse') refuse();
+  } else if(screen === SUB_FEED){
+    feedKind = subSel.feed;   // label_223 stores 0x073 before its guards run
+    if(!pet.feed(subSel.feed === 0 ? 'meal' : 'snack')) refuse();
+    // and stay: the ROM loops back into the submenu after the animation
+  } else if(screen === SUB_LIGHTS){
+    pet.setLights(subSel.lights === 0);   // label_297 has no guard at all
+    screen = MAIN;                        // the confirm exits by itself
+  } else {
+    toMain();
+  }
+}
+
+function pressC(){
+  if(screen === MAIN) cursor = 0;         // label_159
+  else screen = MAIN;                     // cancel, cursor stays on the icon
+}
+
+function toMain(){ screen = MAIN; }
+
+function press(k){
+  ({ A: pressA, B: pressB, C: pressC })[k]();
+  lastInput = Date.now();
+  save(); render();
+}
+
+/* ===========================================================================
+   Render
+   =========================================================================== */
+let prevRam = {};
+
+function render(){
+  // label_66's ~10-tick 0x057 timeout, in wall clock: an idle screen homes
+  // itself, so the page never sits parked in a submenu the way it would if the
+  // cursor only moved on a click.
+  //
+  // NOT while paused (#64). The timeout runs on the wall clock, so without this
+  // it would home the cursor out from under a RAM edit — a poke pauses for the
+  // duration — and a pause that freezes the screen but keeps quietly moving the
+  // cursor is the worst of both. setPaused() re-arms the timer on resume, or
+  // every pause longer than ten seconds would home the instant it ended.
+  if(!paused && (screen !== MAIN || cursor !== 0) &&
+     Date.now() - lastInput > IDLE_HOME_MS){
+    screen = MAIN; cursor = 0;
+  }
+  renderLcd();
+  renderHeader();
+  renderVitals();
+  renderIcons();
+  renderHint();
+  renderRam();
+  renderLog();
+  renderButtons();
+}
+
+function renderLcd(){
+  // The screen the cursor is on wins, exactly as it does on the device: a
+  // submenu or the meter replaces the pet until B or C leaves it.
+  if(frame < refuseUntil){ drawLcd(withSprite(REFUSE, 8, 0)); return; }
+  if(screen === SUB_FEED)   return drawLcd(drawChoice(MEAL, SNACK, subSel.feed));
+  // The lights submenu also marks which item 0x04B is ON right now, under the
+  // selection bar. label_297 seeds the selection from the live 0x04B, so the
+  // submenu always opens on the current state and a bare B re-applies it —
+  // #62's missing `on=false` entries were that, every one of them a
+  // `setLights(true)` over lights that were already on.            [UI CHOICE]
+  if(screen === SUB_LIGHTS)
+    return drawLcd(drawChoice(LAMP_ON, LAMP_OFF, subSel.lights, pet.lightsOn ? 0 : 1));
+  if(screen === METER)      return drawLcd(drawMeter());
+  // The lights are the only model state the pet screen renders as a WHOLE-SCREEN
+  // change rather than a sprite: 0x04B off darkens the room. A menu screen is
+  // never darkened — the cursor is in the menu, not in the room.
+  drawLcd(drawPet(), !pet.lightsOn);
+}
+
+const withSprite = (sprite, x, y) => {
+  const bits = blankBits();
+  stamp(bits, sprite, x, y);
+  return bits;
+};
+
+/* Two 12-wide glyphs, one per half of the 32-column screen, with a solid bar
+   under the selected one — the page's stand-in for the ROM's flashing
+   selection, which is animation rather than RAM. `live`, when given, is the
+   item that describes the state the pet is in NOW, and gets a dashed bar on
+   the row below: a different signal from the selection, the way the icon bar's
+   .sel is a different signal from .on.                           [UI CHOICE] */
+function drawChoice(left, right, sel, live = null){
+  const bits = blankBits();
+  stamp(bits, left,  2, 2);
+  stamp(bits, right, 18, 2);
+  const bar = (sel === 0) ? 2 : 18;
+  for(let x = bar; x < bar + 12; x++) bits[14][x] = 1;
+  if(live !== null){
+    const at = (live === 0) ? 2 : 18;
+    for(let x = at; x < at + 12; x += 2) bits[15][x] = 1;
+  }
+  return bits;
+}
+
+/* The meter screen: hunger hearts over happy hearts, each row tagged with a
+   5×5 mark so the two are told apart without text. The real device pages
+   through more than this; one page is the page's choice.        [UI CHOICE] */
+function drawMeter(){
+  const bits = blankBits();
+  const row = (mark, n, y) => {
+    stamp(bits, mark, 0, y);
+    for(let i = 0; i < 4; i++)
+      stamp(bits, i < n ? HEART_FULL : HEART_EMPTY, 7 + i*6, y);
+  };
+  row(MARK_HUNGER, pet.hungerHearts, 2);
+  row(MARK_HAPPY,  pet.happyHearts,  9);
+  return bits;
+}
+
+function drawPet(){
+  const bits = blankBits();
+  const bob  = (frame % 20 < 10) ? 0 : 1;   // 2-frame idle animation
+
+  if(pet.stage === STAGE.EGG){
+    stamp(bits, SPRITES.egg, 8, bob);
+  } else if(pet.stage === STAGE.DEAD){
+    stamp(bits, SPRITES.ghost, 8, 0);
+  } else {
+    const sprite = SPRITES[pet.character] || SPRITES.egg;
+    stamp(bits, sprite, 8, bob);
+    if(pet.asleep && frame % 24 < 12) stamp(bits, ZED, 24, 1);
+    if(pet.sick) stamp(bits, SICK, 0, 1);
+    for(let i=0;i<Math.min(pet.poopCount,2);i++) stamp(bits, POOP, 0, 7 - i*8);
+  }
+  return bits;
+}
+
+function renderHeader(){
+  setText('wall',
+    String(pet.hour).padStart(2,'0') + ':' + String(pet.minute).padStart(2,'0'));
+  setText('day', String(Math.floor(pet.elapsed / 1440)));
+}
+
+function renderVitals(){
+  const spec = pet.spec;
+  // The death animation clears 0x05D (label_116), so a corpse has no character
+  // and no stat vector — it is not an egg, and saying so was misleading.
+  setText('name', spec ? spec.name : pet.stage === STAGE.DEAD ? '—' : 'Egg');
+  setText('stage', pet.stage);
+  el('stage').classList.toggle('dead', pet.stage === STAGE.DEAD);
+
+  const pips = (n, max = 4) =>
+    `<span class="pips">${Array.from({length:max},(_,i)=>
+      `<span class="pip ${i<n?'full':''}"></span>`).join('')}</span>`;
+
+  setHtml('vitals', `
+    <div class="vital"><span class="lbl">Hungry</span>${pips(pet.hungerHearts)}<span class="num">${pet.hungerHearts}/4</span></div>
+    <div class="vital"><span class="lbl">Happy</span>${pips(pet.happyHearts)}<span class="num">${pet.happyHearts}/4</span></div>
+    <div class="vital"><span class="lbl">Discipline</span>${pips(Math.ceil(pet.discipline/4))}<span class="num">${Math.round(pet.discipline/15*100)}%</span></div>
+    <div class="vital"><span class="lbl">Weight</span><span></span><span class="num">${pet.weight}</span></div>
+    <div class="vital"><span class="lbl">Age</span><span></span><span class="num">${pet.age}</span></div>
+    <div class="vital"><span class="lbl">Mistakes</span><span></span><span class="num">care ${pet.careMistakes} · train ${pet.disciplineMistakes}${pet.stage==='adult'?` · adult ${pet.adultCareMistakes}/5`:''}</span></div>
+    <div class="vital"><span class="lbl">Heart loss</span><span></span><span class="num">${spec?`${pet.hungryRate}m / ${pet.happyRate}m`:'—'}</span></div>`);
+}
+
+let iconEls = null;
+function renderIcons(){
+  const bar = el('iconbar');
+  if(!iconEls){
+    iconEls = {};
+    for(const [key,label] of ICON_ORDER){
+      const d = document.createElement('div');
+      d.className = 'icon';
+      const c = document.createElement('canvas');
+      c.width = 8*2; c.height = 8*2;
+      const cx = c.getContext('2d');
+      cx.fillStyle = '#a4ac91';
+      ICONS[key].forEach((row,y)=>[...row].forEach((ch,x)=>{
+        if(ch !== '.') cx.fillRect(x*2,y*2,2,2);
+      }));
+      d.appendChild(c);
+      d.insertAdjacentHTML('beforeend', `<span>${label}</span>`);
+      bar.appendChild(d);
+      iconEls[key] = d;
+    }
+  }
+  const on = {
+    food: pet.hungerHearts < 4,
+    light: pet.lightsOn,
+    game: pet.happyHearts < 4,
+    medicine: pet.sick,
+    clean: pet.poopCount > 0,
+    health: pet.alive,
+    discipline: pet.discipline > 0,
+    attention: pet.callTimer > 0 || pet.needsScolding,
+  };
+  const alert = {
+    medicine: pet.sick,
+    clean: pet.poopCount > 0,
+    attention: pet.callTimer > 0 || pet.needsScolding,
+  };
+  // Index i is cursor value i+1 — `attention` (i = 7) has no cursor value, so
+  // it can light up but never be selected.
+  ICON_ORDER.forEach(([key], i) => {
+    const sel = (i + 1) === cursor;
+    iconEls[key].classList.toggle('sel', sel);
+    iconEls[key].classList.toggle('on', !sel && !!on[key] && !alert[key]);
+    iconEls[key].classList.toggle('alert', !sel && !!alert[key]);
+  });
+}
+
+/* What A/B/C do right now, and what the cursor is on. The device has no such
+   label; a page that does not buzz or animate needs one. */
+const ICON_ACTION = [
+  null, 'feed', 'lights', 'game', 'medicine', 'clean', 'meter', 'discipline',
+];
+function renderHint(){
+  let a, b, c, where;
+  if(screen === SUB_FEED){
+    a = 'meal / snack'; b = 'feed ' + (subSel.feed === 0 ? 'meal' : 'snack');
+    c = 'back'; where = `feed · <b>${subSel.feed === 0 ? 'meal' : 'snack'}</b>`;
+  } else if(screen === SUB_LIGHTS){
+    a = 'on / off'; b = 'lights ' + (subSel.lights === 0 ? 'on' : 'off');
+    // The live 0x04B alongside the remembered 0x078 choice: B applies the
+    // SELECTION, not a toggle, so the two can already agree and the press then
+    // changes nothing. #62
+    c = 'back'; where = `lights · <b>${subSel.lights === 0 ? 'on' : 'off'}</b>` +
+      ` · 0x04B is <b>${pet.lightsOn ? 'on' : 'off'}</b> now`;
+  } else if(screen === METER){
+    a = b = c = 'back'; where = '<b>meter</b>';
+  } else {
+    a = 'next icon'; b = cursor ? ICON_ACTION[cursor] : 'nothing selected';
+    c = 'home'; where = cursor ? `cursor 0x075 = ${cursor} · <b>${ICON_ACTION[cursor]}</b>`
+                               : 'cursor 0x075 = 0 · <b>home</b>';
+  }
+  setText('lbl-a', a);
+  setText('lbl-b', b);
+  setText('lbl-c', c);
+  setHtml('hint', where);
+}
+
+// One row per RAM_MAP entry — the model's own address -> property table, which
+// is also what dumpRam() and pokeRam() walk, so the panel cannot label a row
+// with a field the model no longer has. The labels are property names on
+// purpose: 0x048 is a shot counter, not a flag (#32), and 0x208/0x209 are
+// countdowns-to-a-mistake, not booleans (#3, #29), and "sick"/"calling" read as
+// flags and were both wrong.
+const hexAddr = (a) => '0x' + Number(a).toString(16).padStart(3,'0');
+
+/* ---- the ROM column (#41) -------------------------------------------------
+   What the model's decoded value would look like in a trace: encodeField() from
+   harness/fields.mjs, the same call run-model.mjs makes on dumpRam() before the
+   diff. So a row here is comparable by eye to a line of oracle.jsonl, which is
+   the whole point — the model shows `lightsOn` 1 where the ROM writes 0xF, and
+   #5/#6/#27 were all cases of the two writing different nibbles for the same
+   logical state, every one of them found in a trace rather than on this page.
+
+   NIBBLE ORDER: the nibbles are printed in ASCENDING ADDRESS ORDER, one hex
+   digit each, which is the order a trace's `ram` keys read. Under DEFAULT_ORDER
+   = "le" that is LOW NIBBLE FIRST — weight 35 prints "5 3" (0x046=5, 0x047=3)
+   and evolutionTimer 0xB40 prints "0 4 B". Hovering a cell spells out addr=nibble
+   so the reading never depends on remembering that. */
+const romCell = (fld, value) => {
+  const enc = encodeField(fld, value);
+  const addrs = Object.keys(enc).map(Number).sort((a,b)=>a-b);
+  const hx = (a) => enc[a].toString(16).toUpperCase();
+  return {
+    text: addrs.map(hx).join(' '),
+    title: addrs.map(a => `${hexAddr(a)}=${hx(a)}`).join('  ') +
+      // `nz` is fields.mjs's opt-in escape hatch: the diff only holds the model
+      // to nonzero-vs-zero, so the nibble shown is a stand-in, not a claim.
+      (fld.enc === 'nz' ? `  (${fld.name}: nz — the ROM writes 8-15 here and only`
+        + ` nonzero-vs-zero is compared, #6)` : ''),
+  };
+};
+
+/* ---- what each address MEANS (#66) ----------------------------------------
+   Several of these are famous for not meaning what their name suggests, and a
+   panel that labels a row `sickByte` and stops has told the reader nothing:
+   0x048 is a shot counter whose residue outlives the cure (#32), 0x208/0x209
+   are countdowns-to-a-mistake rather than booleans (#3, #29), 0x205's high
+   nibble is a disarm sentinel, 0xF is an inactive marker on some timers and a
+   live value on others (#2), and age and weight are BCD across two nibbles.
+
+   WHERE THIS HONESTLY LIVES. #66 asked for these as a `desc` on each RAM_MAP
+   entry in tama-p1-model.js, on the single-table argument. They are here
+   instead, deliberately: the model is meant to lift into other projects and
+   prose written for THIS panel is not part of what should lift, so a
+   description is presentation the same way the meter screen's layout is.
+   The single-table principle is kept where it actually bites —
+
+     - the panel still walks RAM_MAP and nothing else, so a row cannot be
+       described that the model no longer has;
+     - the map below is keyed by RAM_MAP's own base addresses and never
+       restates a name, a width or a bound, all of which come from the entry;
+     - describeField() PREFERS a `desc` on the RAM_MAP entry when one exists,
+       so promoting these into the model later is a deletion here and nothing
+       more;
+     - coverage is not left to trust. A RAM_MAP entry with no description says
+       so in its own tooltip and warns once on the console — the page-side
+       equivalent of the selftest case #66 asked for, and it fires the moment a
+       field is added rather than the next time someone reads the panel.
+
+   The content is not new claims: it is the [ROM]-tagged comments already
+   standing beside each field in tama-p1-model.js, moved to where the page can
+   render them. A change to a rule one of these states is a change to the
+   description too. */
+const FIELD_DESC = {
+  0x040: 'Hunger, in QUARTER-HEART units, not hearts: a single nibble 0-15 ' +
+    'where a meal adds 4 and clamps at 0xF, so four hearts is 15 and the ' +
+    'display is ceil(value / 4). Power-on 1 is a quarter of a heart, which ' +
+    'shows as one heart and is gone on the first decay.',
+  0x041: 'Happiness, in the same quarter-heart units as 0x040: 0-15, +4 per ' +
+    'win or snack, -4 per decay, clamped at both ends.',
+  0x042: 'Care mistakes, cumulative across evolutions and SATURATING at 0xF ' +
+    'rather than wrapping (label_389). Booked by an unanswered attention call ' +
+    'at 0x208 and by the lights left on at 0x204/5 — never by the neglect ' +
+    'counter. Read against the growth chart at every evolution.',
+  0x043: 'The discipline meter, in sixteenths like the hearts and not in ' +
+    'quarters: a scold adds 4 and clamps at 0xF, so the panel\'s percentage ' +
+    'is value/15. Loaded at a character change from that character\'s 0x244.',
+  0x046: 'Weight in decimal, BCD across two nibbles — 0x046 is the units and ' +
+    '0x047 the tens. A meal adds 1, a game loses 1, and every change is ' +
+    'clamped into the live character\'s [0x23C/D, 0x23E/F] window, downwards ' +
+    'as well as up.',
+  0x048: 'NOT a sick flag. Bit 3 is the flag; the low three bits are a ' +
+    'medicine-shot counter. Falling ill writes 0xF outright, a shot computes ' +
+    '((value & 7) | 8) + the character\'s dose at 0x23B and keeps the low ' +
+    'nibble, and a result under 8 is the cure. The residue in the low bits ' +
+    'survives the cure and the next evolution — only death or a fresh onset ' +
+    'clears it. #32',
+  0x049: 'Sicknesses this life stage. Reset at an EVOLUTION and never at a ' +
+    'cure (#11), and the third one is a death condition.',
+  0x04a: 'Asleep. The model keeps a flag; the ROM writes 8-15, because the low ' +
+    'three bits are the sleep sprite\'s frame counter — which is why the diff ' +
+    'only holds this address to nonzero-vs-zero, and why a sample can land in ' +
+    'the two instructions where the sprite\'s carry takes bit 3 out (#6, #60).',
+  0x04b: 'Lights on. The ROM writes 0xF for on and 0 for off. Two writers ' +
+    'raise no event: the wake path (label_359) and the death animation ' +
+    '(label_116) both turn them back on silently, which is why the event log ' +
+    'renders those as `derived` lines (#62).',
+  0x04d: 'Poops on screen, saturating at 8. The drop that REACHES 8 zeroes the ' +
+    'sickness countdown at 0x20D-F outright when the pet is not already ill, ' +
+    'so an eighth poop is an immediate illness rather than a shortened one.',
+  0x04e: 'Set once a final-form adult outlives its evolution timer, and never ' +
+    'cleared. The community RAM notes call this the egg flag; the only branch ' +
+    'on it in the whole ROM selects an extra death-animation sequence. The P1 ' +
+    'has no egg-laying and no next generation. #22, #48',
+  0x04f: 'Care mistakes as an ADULT, counted separately from 0x042 and only ' +
+    'while the pet is one. Five is a death condition.',
+  0x050: 'Which growth chart the next evolution is decided from — the ROM ' +
+    'dispatches on this value, not on the character. 0 Babytchi, 1 Marutchi, ' +
+    '2/3 Tamatchi, 4/5 Kuchitamatchi, 6 the type-2 Maskutchi, and 0xF for ' +
+    'every other adult, which is the value the "is a final adult" tests look ' +
+    'for. Chart 6 is reached and evolves into Bill (#21).',
+  0x051: 'Discipline mistakes, cumulative and saturating at 0xF. Its ONLY ' +
+    'writer is the ignored-request path: 0x209 reaching 0xF. Scolding a pet ' +
+    'that did not ask books nothing — that arm of label_301 is animation and ' +
+    'buzzer with no RAM write at all. #19',
+  0x054: 'Age in days, BCD across two nibbles (0x054 units, 0x055 tens), ' +
+    'saturating at 99. Incremented at every WAKE and nowhere else — not on a ' +
+    'wall-clock day boundary, and with no nap/night distinction, which is why ' +
+    'a Babytchi is age 1 at minute 50. #10',
+  0x05a: 'A free-running 4-bit counter driven by the programmable timer at ' +
+    '~2194 increments a minute — deterministic hardware, not a PRNG, and not ' +
+    'something a one-minute time base can track. The guessing game reads it, ' +
+    'so a game played here is the right computation on a guessed input; the ' +
+    'harness ignores this address and replays the ROM\'s scores instead. ' +
+    '#15, #16',
+  0x05d: 'Which character. Cleared by the death animation, so a corpse has no ' +
+    'character and no stat block. Changing it does NOT reload 0x230-0x249 — ' +
+    'that is a separate copy the ROM makes at an evolution, which is why a ' +
+    'poke here alone leaves the pet running the previous character\'s numbers.',
+  0x07c: 'The egg countdown: 5 at power-on, down to 0, and then parked at 0xF ' +
+    'FOREVER as "already hatched". The whole per-minute game tick is gated on ' +
+    'this reading 0xF, so it is a state, not just a timer.',
+  0x200: 'Minutes to the next hungry-heart decrement, two nibbles, reloaded ' +
+    'from the live rate at 0x234/5. Power-on 0 is what costs the newborn its ' +
+    'first quarter heart.',
+  0x202: 'Minutes to the next happy-heart decrement, reloaded from 0x236/7.',
+  0x204: 'Minutes the pet has been asleep, counting UP and pinned at 0xFF. It ' +
+    'runs whether the lights are on or off. The care mistake is booked off the ' +
+    'HIGH nibble alone — 0x205 reading 4..0xE, i.e. 64 minutes — and turning ' +
+    'the lights off DISARMS it by writing 0xF to 0x205 rather than by clearing ' +
+    'the count. Turning them back on does not re-arm; only the next bedtime ' +
+    'does, so lights off from before bedtime does not help. #3',
+  0x206: 'Minutes to the next poop, two nibbles. Reloaded to 25 for a baby and ' +
+    '180 for everyone else. Power-on 0x0F is a live 15-minute countdown, not ' +
+    'an inactive marker — the first poop lands 15 minutes after the hatch.',
+  0x208: 'The attention call, a COUNTDOWN TO A MISTAKE and not a flag: 0 is ' +
+    'not calling, and 1..0xF is minutes since a meter emptied. The clock ' +
+    'advances it only while nonzero, saturates it at 0xF, and the mistake is ' +
+    'booked the minute it reads 0xF. Re-arming it before it saturates is what ' +
+    'makes a fast character look immune. A Babytchi arms at 0xD, everyone else ' +
+    'at 1, and a Babytchi\'s mistakes are thrown away. #3',
+  0x209: 'The discipline call — the same shape as 0x208: armed at 1, advanced ' +
+    'once a minute, and 0xF books a DISCIPLINE mistake into 0x051. It also ' +
+    'gates the meal and the game while nonzero, which is what "it wants ' +
+    'something else first" means. #29',
+  0x20a: 'Minutes with both meters empty, three nibbles. It does NOT clamp: ' +
+    'the add is a bare carry chain, so it rolls 0xFFF over to 0. A death ' +
+    'condition at 0x2D0 (720 minutes), tested nibble by nibble rather than as ' +
+    'a number, so the passing range is not contiguous.',
+  0x20d: 'The sickness counter, three nibbles, and it runs BOTH WAYS: down ' +
+    'while healthy, where reaching 0 is the onset, and up while sick, where ' +
+    '0x160 (352 minutes) is death. A snack knocks a minute off a healthy ' +
+    'pet\'s. Reloaded from the character\'s 0x238-A at a cure, and at an ' +
+    'evolution only if the pet is not already ill.',
+  0x210: 'Minutes to the next evolution, three nibbles, reloaded from the ' +
+    'character\'s 0x240-2. Frozen by sleep like every other timer; NOT frozen ' +
+    'by sickness — a pet evolves on schedule while ill. #9',
+  0x213: 'Counts heart decrements, not minutes, and reaching 0 is what makes ' +
+    'the pet ask for discipline. Reloaded from the character\'s 0x243. The ' +
+    'request is then dropped whenever 0x043 + 1 carries, which is the whole of ' +
+    '"a well-disciplined pet stops asking" — at 0x043 = 0xF it always carries.',
+  0x215: 'The Babytchi nap, in minutes asleep remaining. Written ONCE at ' +
+    'power-on (5) and never reloaded, so it doubles as "has this pet already ' +
+    'had its nap": once it reads 0 the nap can never start again. #8',
+  0x216: 'Minutes a Babytchi stays awake before its nap, two nibbles, written ' +
+    'once at power-on (40) and never reloaded. It counts from the HATCH, not ' +
+    'from power-on, which is why the nap lands at minutes 45-49 whatever hour ' +
+    'the machine was switched on. #8',
+  0x230: 'The character\'s wake hour, from the ROM stat table. 0xFF means no ' +
+    'wall-clock bedtime at all — a Babytchi, which sleeps off 0x215/0x216 ' +
+    'instead. Bedtime is a WINDOW on the hour, not an exact-minute match.',
+  0x232: 'The character\'s sleep hour. Asleep iff hour >= this OR hour < ' +
+    '0x230/1, re-evaluated every main-loop pass; the minute is never read.',
+  0x234: 'Minutes per hungry heart — the LIVE rate 0x200/1 reloads from, not a ' +
+    'constant. A final-form adult past its evolution timer has this decayed by ' +
+    'a quarter at every wake, which is the whole of "it gets needier as it ' +
+    'ages": once per wake, not once per day.',
+  0x236: 'Minutes per happy heart, the live rate 0x202/3 reloads from, decayed ' +
+    'at a wake on the same terms as 0x234/5.',
+  0x238: 'The character\'s sickness reload, three nibbles — what 0x20D-F is ' +
+    'set to at a cure, and at an evolution when the pet is not already ill.',
+  0x23b: 'The character\'s medicine dose: what one shot adds to 0x048. It ' +
+    'decides how many presses a cure takes, since the cure is the carry past ' +
+    'bit 3. #32',
+  0x23c: 'The character\'s minimum weight, BCD. Every weight change is clamped ' +
+    'into this window, and a character change clamps the carried-over weight ' +
+    'UP to it.',
+  0x23e: 'The character\'s maximum weight, BCD. A character change clamps the ' +
+    'carried-over weight down to it as well as up to 0x23C/D. #53',
+  0x240: 'The character\'s evolution time in minutes, three nibbles — what ' +
+    '0x210-2 is loaded with when this character is entered.',
+  0x243: 'The character\'s reload for 0x213, in heart decrements. 0xF means no ' +
+    'discipline countdown: the "off" state is all-ones, not zero.',
+  0x244: 'The character\'s starting discipline — what 0x043 is loaded with at ' +
+    'the character change.',
+  0x245: 'The character\'s guessing-game byte: what each round adds to 0x05A, ' +
+    'carry set. A round is a WIN on carry, so a bigger value is an easier ' +
+    'game. #19',
+  0x246: 'The input delay the game loads after a round the pet WON.',
+  0x247: 'The input delay after a round the pet lost.',
+  0x248: 'Low nibble of the stat block\'s trailing byte: the feeding ' +
+    'animation\'s bite count in the ROM\'s own encoding, 0 = four bites and ' +
+    '1 = two. Nothing reads it, but the ROM writes it and the diff compares it.',
+  0x249: 'High nibble of the stat block\'s trailing byte. Zero in all ten ' +
+    'blocks; nothing reads it, and it is here because the ROM writes it.',
+};
+
+const undescribed = new Set();
+function describeField(f){
+  // A `desc` on the RAM_MAP entry wins, so moving these into the model later
+  // costs nothing here but the map.
+  const d = f.desc || FIELD_DESC[f.addr];
+  if(d) return d;
+  if(!undescribed.has(f.addr)){
+    undescribed.add(f.addr);
+    console.warn(
+      `index.html: ${hexAddr(f.addr)} (${f.prop}) is in RAM_MAP with no ` +
+      `description — add one to FIELD_DESC. #66`);
+  }
+  return `No description yet for ${f.prop}. Add one to FIELD_DESC in ` +
+    `index.html, or as a \`desc\` on this RAM_MAP entry. #66`;
+}
+
+/* The width, kind and bound come off the RAM_MAP entry rather than the prose,
+   so they cannot disagree with the row they are describing. */
+function fieldTip(f){
+  const w = f.w === 1 ? '1 nibble' : `${f.w} nibbles`;
+  const kind = f.kind === 'bcd' ? 'BCD' : f.kind === 'bool' ? 'flag' : 'hex';
+  return `${hexAddr(f.addr)}  ${f.prop}  —  ${w}, ${kind}, 0 to ${f.max}\n\n` +
+    describeField(f);
+}
+
+// One row per RAM_MAP entry — the model's own address -> property table, which
+// is also what dumpRam() and pokeRam() walk, so the panel cannot label a row
+// with a field the model no longer has. selftest.mjs holds RAM_MAP and FIELDS
+// to the same addresses, so fieldAt() always resolves for a row built here.
+let ramRows = null;
+function renderRam(){
+  const dump = pet.dumpRam();
+  const tbody = el('ram');
+  if(!ramRows){
+    ramRows = {};
+    el('th-rom').title =
+      `encoded nibbles, ascending address — DEFAULT_ORDER = "${DEFAULT_ORDER}", ` +
+      (DEFAULT_ORDER === 'le' ? 'so low nibble first' : 'so high nibble first');
+    for(const f of RAM_MAP){
+      const fld = fieldAt(f.addr);
+      const tr = document.createElement('tr');
+      tr.innerHTML =
+        `<td class="addr">${hexAddr(f.addr)}</td>` +
+        `<td class="fld">${f.prop}</td>` +
+        `<td class="val" tabindex="0" title="poke ${f.prop} — 0 to ${f.max}"></td>` +
+        `<td class="rom${fld.enc === 'nz' ? ' nz' : ''}"></td>`;
+      // The address and the name both carry it: whichever the reader's pointer
+      // is already over is the one that answers. #66
+      const tip = fieldTip(f);
+      tr.querySelector('.addr').title = tip;
+      tr.querySelector('.fld').title = tip;
+      const td = tr.querySelector('.val');
+      td.onclick = () => beginPoke(f, td);
+      td.onkeydown = (e) => {
+        if(e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        beginPoke(f, td);
+      };
+      tbody.appendChild(tr);
+      ramRows[f.addr] = { tr, fld };
+    }
+  }
+  for(const [addr,v] of Object.entries(dump)){
+    const { tr, fld } = ramRows[addr];
+    // Never touch the cell being edited — it holds an <input>, not a value.
+    if(prevRam[addr] !== v && !(poking && poking.addr === Number(addr))){
+      tr.querySelector('.val').textContent = v;
+      const rom = romCell(fld, v);
+      const td = tr.querySelector('.rom');
+      td.textContent = rom.text;
+      td.title = rom.title;
+      tr.classList.add('hit');
+      setTimeout(()=>tr.classList.remove('hit'), 120);
+    }
+  }
+  prevRam = dump;
+}
+
+/* ---- poking (#25) ---------------------------------------------------------
+   A poke is a memory poke: pokeRam() writes the raw field and clamps it to what
+   the field's nibbles can hold, and nothing else happens until the next tick —
+   poking `character` does NOT reload the stat vector, exactly as on the ROM.
+
+   The sim pauses for the duration, because render() runs ten times a second and
+   would rewrite the cell under the cursor. Enter commits; Escape and blur both
+   cancel — one rule for "left the cell without saying commit", so clicking
+   somewhere else never writes a half-typed number. */
+let poking = null;
+
+function endPoke(commit){
+  if(!poking) return;
+  const { addr, td, input, wasPaused } = poking;
+  const raw = input.value.trim();
+  poking = null;
+  input.remove();
+  td.textContent = prevRam[addr] ?? '';
+  if(commit && raw !== ''){
+    const v = Number(raw);            // decimal, or 0x… — this is a RAM panel
+    if(Number.isFinite(v)) pet.pokeRam(addr, v);
+  }
+  setPaused(wasPaused);
+  save(); render();
+}
+
+function beginPoke(f, td){
+  if(poking) return;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = String(pet.dumpRam()[f.addr] ?? 0);
+  input.setAttribute('aria-label', `${f.prop} at ${hexAddr(f.addr)}, 0 to ${f.max}`);
+  input.onkeydown = (e) => {
+    if(e.key === 'Enter') endPoke(true);
+    else if(e.key === 'Escape') endPoke(false);
+    else return;
+    e.preventDefault();
+  };
+  input.onblur = () => endPoke(false);
+  poking = { addr: f.addr, td, input, wasPaused: paused };
+  setPaused(true);
+  td.textContent = '';
+  td.appendChild(input);
+  input.focus();
+  input.select();
+  renderButtons();
+}
+
+// The model's emit() spreads a payload object onto every log entry, and most of
+// those payloads carry the number a reader wants — the feed kind, the game's
+// win count, the sickness count, whether 0x208 armed at 1 or 0xD. Render all of
+// them: anything that isn't the timestamp or the event name prints as k=v, in
+// the order the model wrote it (#39). `from`/`to` keep the arrow evolve had.
+const LOG_SKIP = new Set(['t', 'hour', 'minute', 'event', 'from', 'to']);
+function logDetail(e){
+  const parts = [];
+  if(e.to) parts.push(`${e.from ? e.from + ' ' : ''}→ ${e.to}`);
+  for(const [k, v] of Object.entries(e)){
+    if(!LOG_SKIP.has(k)) parts.push(`${k}=${v}`);
+  }
+  return parts.join(' ');
+}
+
+let logLen = 0;
+
+/* ---- 0x04B's silent transitions (#62) -------------------------------------
+   setLights() emits a `lights` event for both directions, but it is not the
+   only writer of 0x04B: label_359's wake path (tama-p1-model.js, `0x04B = 0xF`
+   three instructions before the age increment) and label_116's death animation
+   both turn the lights back ON with no event, because the ROM does not treat
+   either as a lights action. That is correct model behaviour and must stay —
+   emitting there would put a UI concern in the model.
+
+   It is NOT correct log behaviour: the log would sit on `on=false` while the
+   panel next to it shows 0x04B = 1, and a reader cannot reconstruct the lights
+   state from a record that skips half the transitions. So the PAGE closes the
+   gap on its own side, in its own DOM, without touching pet.log: it tracks the
+   state the log currently implies and, whenever 0x04B disagrees, renders one
+   `derived` line. Marked as derived — never as something the model said.
+   0x04B is bit-exact against the ROM in all eighteen scenarios, so what these
+   lines report is the ROM's own behaviour, just not the model's event stream. */
+let lightsShown = null;
+const DERIVED_LIGHTS =
+  '0x04B changed with no `lights` event — the ROM turns the lights back on at ' +
+  'the wake (label_359) and in the death animation (label_116), and neither is ' +
+  'a lights action. This line is the page reading the address, not the model ' +
+  'emitting an event. #62';
+
+// The "nothing yet" placeholder goes on the first line of ANY kind, model or
+// derived — tracked with its own flag rather than off logLen, or a derived
+// line rendered before the first event would be wiped by the next one.
+let logCleared = false;
+function logLine(cls, t, hour, minute, text, title){
+  if(!logCleared){ el('log').innerHTML = ''; logCleared = true; }
+  const d = document.createElement('div');
+  d.className = cls;
+  if(title) d.title = title;
+  d.innerHTML =
+    `<span class="t">d${Math.floor(t/1440)} ${String(hour).padStart(2,'0')}:` +
+    `${String(minute).padStart(2,'0')}</span><span>${text}</span>`;
+  el('log').prepend(d);
+}
+
+function renderLog(){
+  if(lightsShown === null) lightsShown = pet.lightsOn;
+  if(pet.log.length !== logLen){
+    for(const e of pet.log.slice(logLen)){
+      logLine(e.event, e.t, e.hour, e.minute, `${e.event} ${logDetail(e)}`);
+      if(e.event === 'lights') lightsShown = e.on;
+    }
+    logLen = pet.log.length;
+  }
+  // The ones step() timestamped, then a backstop at the current minute for any
+  // change with no tick to have been caught in — a poke of 0x04B, a restore, a
+  // dev-shortcut click, anything future.
+  for(const s of silentLights.splice(0)){
+    if(s.on !== lightsShown) logLine('lights derived', s.t, s.hour, s.minute,
+      `lights on=${s.on} · derived`, DERIVED_LIGHTS);
+    lightsShown = s.on;
+  }
+  if(lightsShown !== pet.lightsOn){
+    logLine('lights derived', pet.elapsed, pet.hour, pet.minute,
+      `lights on=${pet.lightsOn} · derived`, DERIVED_LIGHTS);
+    lightsShown = pet.lightsOn;
+  }
+}
+
+/* Each `disabled` here mirrors the refusal in the matching model method, which
+   mirrors the ROM's handler guards (#34). Keep them in step: a button the ROM
+   refuses but the page offers just does nothing when clicked.
+     meal      label_223 — sick, 0x209 pending, or a full meter
+     snack     label_224 — no guard beyond label_220's asleep test: a snack is
+                           what a sick pet accepts, and a full meter does not
+                           stop it either (it just costs the weight, #44/#45).
+                           label_224 does read 0x048, but only to decide
+                           whether the snack also knocks a minute off the
+                           sickness countdown — a healthy pet's does (#45)
+     game      label_196 — asleep, sick, or 0x209 pending
+     medicine  label_191 — asleep
+     clean     label_336 — asleep. An EMPTY TRAY IS NOT A REFUSAL: the sweep
+                           animation always plays and 0x04D is zeroed only if
+                           nonzero, which is why dispatch()'s case 5 accepts it
+     scold     label_301 — asleep (awake with nothing pending is animation only)
+     lights    label_297 — no guard at all, the one handler without one
+
+   #63 held all seven of these against the equivalent A/B/C walk, state by
+   state, and the two tables have to be written from the SAME predicates or
+   they drift: three of them had, all three by the page being stricter than
+   the ROM. So the tests below are the model's own — `!pet.alive` and
+   `!pet.spec` are the guards feed()/playGame()/medicine() evaluate (#55), not
+   a stage test standing in for them — and where the handler has no guard, nor
+   does the button. */
+function renderButtons(){
+  const dead = pet.stage === STAGE.DEAD;
+  const noSpec = !pet.spec;               // 0x05D clear: an egg or a corpse
+  const pending = pet.scoldTimer !== 0;
+  el('btn-meal').disabled  = !pet.alive || noSpec || pet.asleep || pet.sick
+                                  || pending || pet.hunger >= RULES.HEART_FULL;
+  el('btn-snack').disabled = !pet.alive || noSpec || pet.asleep;
+  el('btn-game').disabled  = !pet.alive || noSpec || pet.asleep || pet.sick || pending;
+  el('btn-med').disabled   = noSpec || pet.asleep || !pet.sick;
+  el('btn-clean').disabled = pet.asleep;
+  el('btn-scold').disabled = !pet.alive || pet.asleep;
+  el('btn-light').disabled = false;
+  el('btn-med').classList.toggle('urgent', pet.sick);
+  el('btn-clean').classList.toggle('urgent', pet.poopCount > 0);
+  el('btn-scold').classList.toggle('urgent', pet.needsScolding);
+  setText('btn-light', pet.lightsOn ? 'Lights off' : 'Lights on');
+  setText('alive-tag', dead ? 'dead' : paused ? 'paused' : 'running');
+}
+
+/* ===========================================================================
+   Input
+   =========================================================================== */
+const act = (fn) => () => { fn(); save(); render(); };
+
+/* A direct action additionally ends on the PET screen, because every ROM
+   action ends there too — and because renderLcd() never darkens a menu
+   screen and never shows the pet on one, a shortcut clicked while a submenu
+   or the meter was up used to change RAM with no visible LCD effect at all:
+   "Lights does nothing". The cursor is left where it was, exactly as
+   label_297's own confirm leaves it.                          [UI CHOICE] */
+const devact = (fn) => act(()=>{ fn(); screen = MAIN; });
+
+/* ---- the three buttons (#23) ---------------------------------------------
+   Never disabled: the device's buttons always respond, and a press the ROM
+   refuses is a refusal animation, not a dead button. The dev shortcuts below
+   keep their disabled states because those mirror the model's guards field for
+   field and are useful as documentation. */
+el('btn-a').onclick = () => press('A');
+el('btn-b').onclick = () => press('B');
+el('btn-c').onclick = () => press('C');
+
+// A/B/C, with arrow-right / Enter / Escape as aliases. Suppressed while a RAM
+// cell is being poked, where Enter commits and Escape cancels (#25).
+const KEYS = {
+  a:'A', A:'A', ArrowRight:'A',
+  b:'B', B:'B', Enter:'B',
+  c:'C', C:'C', Escape:'C',
+};
+document.addEventListener('keydown', (e) => {
+  if(poking || e.metaKey || e.ctrlKey || e.altKey) return;
+  const t = e.target;
+  if(t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  // Enter on a focused button is that button's click — don't steal it, or the
+  // keyboard route to Pause/Step/Reset stops working after one click.
+  if(t && (t.tagName === 'BUTTON' || t.tagName === 'SUMMARY') && e.key === 'Enter') return;
+  const k = KEYS[e.key];
+  if(!k) return;
+  e.preventDefault();
+  press(k);
+});
+
+// The handler above deliberately hands Enter to a focused button so the
+// keyboard route to Pause/Step/Reset survives — but a MOUSE click parks focus
+// on the button it hit, and from then on Enter re-fired that button instead
+// of acting as B. Drop focus after pointer clicks only: a click synthesised
+// by keyboard activation reports detail 0, so tab + Enter keeps working.
+document.addEventListener('click', (e) => {
+  const b = e.target instanceof Element && e.target.closest('button');
+  if(b && e.detail > 0) b.blur();
+});
+
+el('btn-meal').onclick  = devact(()=>pet.feed('meal'));
+el('btn-snack').onclick = devact(()=>pet.feed('snack'));
+el('btn-game').onclick  = devact(()=>pet.playGame(0));
+el('btn-med').onclick   = devact(()=>pet.medicine());
+el('btn-clean').onclick = devact(()=>pet.clean());
+el('btn-scold').onclick = devact(()=>{ pet.scold(); });
+// The shortcut TOGGLES; the A/B/C route APPLIES the submenu selection, which
+// dispatch() seeds from the live 0x04B at every open exactly as label_297
+// does — so no selection state needs syncing here.
+el('btn-light').onclick = devact(()=>{ pet.setLights(!pet.lightsOn); });
+function doReset(){
+  endPoke(false); fresh(); ramRows = null; logLen = 0; prevRam = {};
+  lightsShown = null; logCleared = false; silentLights = [];
+  cursor = 0; screen = MAIN; subSel = { feed: 0, lights: 0 }; feedKind = 0;
+  refuseUntil = 0;
+  el('ram').innerHTML=''; el('log').innerHTML='<div class="empty">Fresh egg. Five minutes to hatch.</div>';
+}
+// Two Reset buttons, different contracts: the dev-shortcut one resets on the
+// spot (it sits beside the start-time/seed inputs it reads, and dev work
+// resets constantly), while the one in the top bar guards a whole run with a
+// confirm — it is the reachable one, and a mis-click there would cost a pet
+// days old. Both power on from the same inputs.                [UI CHOICE]
+el('btn-reset').onclick = act(doReset);
+el('btn-reset-top').onclick = () => {
+  if(confirm('Reset? This discards the current Tamagotchi and hatches a new egg.'))
+    act(doReset)();
+};
+el('btn-step').onclick  = act(()=>step(1));
+el('btn-pause').onclick = act(()=>setPaused(!paused));
+
+// Pausing happens from two places now — the button and a poke, which pauses for
+// as long as a cell is in edit mode — so the button's label lives with the flag.
+function setPaused(p){
+  const was = paused;
+  paused = p;
+  el('btn-pause').textContent = paused ? 'Resume' : 'Pause';
+  // The frozen-animation signal reaches the icon bar's CSS blink too (#64).
+  document.body.classList.toggle('paused', paused);
+  // Resuming re-arms the idle-home timer. It is wall-clock, and render() does
+  // not run it while paused, so a pause longer than IDLE_HOME_MS would
+  // otherwise home the cursor the instant the sim came back.
+  if(was && !paused) lastInput = Date.now();
+}
+
+const grp = el('speeds');
+SPEEDS.forEach(([label],i)=>{
+  const b = document.createElement('button');
+  b.textContent = label;
+  b.setAttribute('aria-pressed', String(i === speedIdx));
+  b.onclick = () => {
+    speedIdx = i; acc = 0;
+    [...grp.children].forEach((c,j)=>c.setAttribute('aria-pressed', String(j===i)));
+    save();   // the speed persists with the pet — see the speedIdx comment
+  };
+  grp.appendChild(b);
+});
+
+render();
+</script>
+</body>
+</html>
